@@ -148,6 +148,9 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		}
 		o.syncCIAvailability(state, ciIssues, now)
 	}
+	recoveryTransitions := o.restoreWorkAttemptRetryIntents(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
+	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, recoveryTransitions)
+	fetched.status = overlayIssueStateSnapshots(fetched.status, recoveryTransitions)
 	terminalRetryTransitions := o.reconcileTerminalAttemptRetryStates(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now)
 	fetched.candidates = overlayIssueStateSnapshots(fetched.candidates, terminalRetryTransitions)
 	fetched.status = overlayIssueStateSnapshots(fetched.status, terminalRetryTransitions)

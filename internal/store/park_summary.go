@@ -121,8 +121,11 @@ ON CONFLICT(project_id, issue_key) DO UPDATE SET
   issue_id = excluded.issue_id,
   identifier = excluded.identifier,
   issue_url = excluded.issue_url,
-  park_sequence = excluded.park_sequence,
-  acknowledged_at = excluded.acknowledged_at
+  park_sequence = MAX(issue_park_acknowledgements.park_sequence, excluded.park_sequence),
+  acknowledged_at = CASE
+    WHEN excluded.park_sequence > issue_park_acknowledgements.park_sequence THEN excluded.acknowledged_at
+    ELSE issue_park_acknowledgements.acknowledged_at
+  END
 `, identity.ProjectID, key, identity.IssueID, identity.Identifier, identity.IssueURL, max(parkSequence, 0), acknowledgedAt)
 	if err != nil {
 		return fmt.Errorf("acknowledging issue parks: %w", err)

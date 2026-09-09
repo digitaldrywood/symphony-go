@@ -369,3 +369,30 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueConfigurationErrorClassification(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		effort            string
+		catalogError      error
+		wantConfiguration bool
+		wantError         bool
+	}{
+		{name: "invalid issue effort", effort: "normal", wantConfiguration: true, wantError: true},
+		{name: "corrected effort", effort: "low"},
+		{name: "catalog unavailable", effort: "low", catalogError: errors.New("catalog unavailable"), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Agents.ModelSelection.Preset = new("sol_first")
+			backend := &catalogAgentBackend{models: selectionCatalog(), err: tc.catalogError}
+			issue := connector.Issue{Description: "```detent-agent\nschema: 1\neffort: " + tc.effort + "\n```"}
+			selection := resolveRequestAgentSelection(t.Context(), RunRequest{Issue: issue}, "", "", RoleCode, cfg, config.AgentBackend{Kind: config.AgentBackendCodex}, backend)
+			var invalid *IssueConfigurationError
+			if errors.As(selection.Err, &invalid) != tc.wantConfiguration || (selection.Err != nil) != tc.wantError {
+				t.Fatalf("classification = %T (%v), want configuration %v, error %v", selection.Err, selection.Err, tc.wantConfiguration, tc.wantError)
+			}
+		})
+	}
+}

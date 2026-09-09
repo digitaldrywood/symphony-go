@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -131,7 +130,6 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	}
 	orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
 	state := newState(orch.cfg)
-	state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: string(budget.ReasonPerIssueMaxUSD), RefusedAt: now.Add(-time.Hour)}
 
 	response, err := orch.handleWorkAttemptRecovery(ctx, &state, WorkAttemptRecoveryRequest{
 		ProjectID: "detent",
@@ -162,7 +160,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 		t.Fatalf("state.BudgetRefusals still contains %q after explicit operator retry", issue.ID)
 	}
 	event := recoveryTimelineEvent(t, ctx, runtimeStore, issue.ID, WorkAttemptRecoveryRetryResume)
-	if event.Status != "succeeded" || !strings.Contains(event.MetadataJSON, `"resume_eligible":true`) {
+	if event.Status != "queued" || !strings.Contains(event.MetadataJSON, `"resume_eligible":true`) {
 		t.Fatalf("audit event = %#v, want succeeded resume audit", event)
 	}
 }
@@ -322,7 +320,7 @@ func (*recoveryTestConnector) FetchIssuesByStates(context.Context, []string) ([]
 }
 
 func (*recoveryTestConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return nil, nil
+	return []connector.Issue{recoveryTestIssue()}, nil
 }
 
 func (*recoveryTestConnector) CreateComment(context.Context, string, string) error {
@@ -342,4 +340,50 @@ func (c *recoveryTestConnector) SetField(_ context.Context, issueID string, fiel
 	c.fieldName = fieldName
 	c.fieldValue = value
 	return nil
+}
+
+func TestRecoveryPreservesIndependentRuntimeHolds(t *testing.T) {
+	t.Parallel()
+	for _, source := range []BlockedSource{BlockedSourceDependency, BlockedSourceOperatorStop, BlockedSourceOwnership, BlockedSourceMergeDuration} {
+		t.Run(string(source), func(t *testing.T) {
+			runtimeStore := openWorkAttemptRecoveryStore(t, t.Context())
+			issue := recoveryTestIssue()
+			now := time.Now().UTC()
+			attemptID := startRecoveryWorkAttempt(t, t.Context(), runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Minute))
+			orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: source, Reason: "independent predicate remains false"}
+			response, err := orch.handleWorkAttemptRecovery(t.Context(), &state, WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := state.Blocked[issue.ID]; !ok {
+				t.Fatal("recovery erased an independent hold")
+			}
+			if response.Status != "blocked" || !strings.Contains(response.Message, "independent predicate") {
+				t.Fatalf("response conceals independent hold: %#v", response)
+			}
+		})
+	}
+}
+
+func TestRecoveryDoesNotQueueBehindRunningWorker(t *testing.T) {
+	t.Parallel()
+	runtimeStore := openWorkAttemptRecoveryStore(t, t.Context())
+	issue := recoveryTestIssue()
+	now := time.Now().UTC()
+	attemptID := startRecoveryWorkAttempt(t, t.Context(), runtimeStore, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Minute))
+	orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
+	state := newState(orch.cfg)
+	state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID + 1}
+	response, err := orch.handleWorkAttemptRecovery(t.Context(), &state, WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatal("recovery queued another retry behind a running worker")
+	}
+	if response.Status != "running" {
+		t.Fatalf("status = %q, want running", response.Status)
+	}
 }

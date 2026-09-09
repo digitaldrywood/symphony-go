@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -318,6 +319,76 @@ func TestRecoveryParkAcknowledgementRearmsForNextPark(t *testing.T) {
 		if _, held := state.Blocked[issue.ID]; held {
 			t.Fatalf("cycle %d retained explicitly acknowledged park", cycle)
 		}
+	}
+}
+
+func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
+	t.Parallel()
+	for _, independent := range []bool{false, true} {
+		t.Run(strconv.FormatBool(independent), func(t *testing.T) {
+			now := time.Now().UTC()
+			issue := recoveryTestIssue()
+			issue.State = "Todo"
+			issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#2323", State: "Done", Source: connector.BlockedRefSourceNative}}
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+			park := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: dispatchLoopDetectedReason, CauseFingerprint: "park-4"}}
+			for index := range 4 {
+				host.recordLaneTransition(t.Context(), issue, "Blocked", now.Add(time.Duration(index-4)*time.Minute), dispatchLoopDetectedReason, park)
+			}
+			identity := store.IssueIdentity{ProjectID: "detent", IssueID: issue.ID}
+			summary, err := db.(store.ParkSummaryStore).IssueParkSummary(t.Context(), identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary.ParkCount != 4 {
+				t.Fatalf("park count = %d, want recorded sequence 4", summary.ParkCount)
+			}
+			if err := db.(store.ParkSummaryStore).AcknowledgeIssueParks(t.Context(), identity, summary.ParkCount, now); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				state := newState(host.cfg)
+				state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: dispatchLoopDetectedReason, Recovery: park.BlockedRecovery}
+				if independent {
+					state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceDependency, Reason: "dependency remains open"}
+				}
+				host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+				blocked, held := state.Blocked[issue.ID]
+				if held != independent || independent && blocked.Source != BlockedSourceDependency {
+					t.Fatalf("acknowledged park reconciliation = %#v, held %v", blocked, held)
+				}
+			}
+			if !independent {
+				host.recordLaneTransition(t.Context(), issue, "Blocked", now.Add(time.Minute), dispatchLoopDetectedReason, park)
+				state := newState(host.cfg)
+				host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+				if _, held := state.Blocked[issue.ID]; !held {
+					t.Fatal("old park sequence acknowledged a new park")
+				}
+			}
+		})
+	}
+}
+
+func TestAcknowledgedParkClearsDelayedTrackerObservation(t *testing.T) {
+	t.Parallel()
+	db := openWorkAttemptRecoveryStore(t, t.Context())
+	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+	issue := recoveryTestIssue()
+	now := time.Now().UTC().Truncate(time.Second)
+	parkedAt := now.Add(-time.Hour)
+	park := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: repeatedFailureCircuitBreakerCause, CauseFingerprint: "resolved"}}
+	host.recordLaneTransition(t.Context(), issue, "Blocked", parkedAt, park.BlockedRecovery.Cause, park)
+	issue.State = "Blocked"
+	issue.StageUpdatedAt = &parkedAt
+	host.recordLaneTransition(t.Context(), issue, "Todo", now, "kanban_move", workflowLaneMetadata{})
+	state := newState(host.cfg)
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: park.BlockedRecovery.Cause, BlockedAt: now.Add(time.Minute)}
+	issue.State = "Todo"
+	host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
+	if _, held := state.Blocked[issue.ID]; held {
+		t.Fatal("delayed observation resurrected an acknowledged park")
 	}
 }
 

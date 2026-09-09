@@ -554,3 +554,24 @@ the TUI uses the `internal/tui` Bubble Tea model with a telemetry hub.
 
 The standing Go-vs-Elixir parity checklist is maintained in
 [docs/parity-audit.md](parity-audit.md).
+
+## Work attempt recovery
+
+`POST /api/v1/projects/{project}/work-attempts/{attempt}/recovery` accepts
+`retry_fresh` or `retry_resume` for the latest failed attempt. Recovery validates
+the current tracker issue and model selection, records retry intent in the
+workflow journal, reconciles the matching corrected configuration failure, and
+wakes the scheduler. Duplicate requests reuse that intent; a newer attempt
+supersedes it. The intent survives restart without acknowledging a later park.
+
+The response distinguishes `queued`, `blocked`, and `running`. `queued` means
+the durable intent awaits scheduler admission. `blockers` lists the current
+holds observed during reconciliation, and `next_action` describes the recheck.
+`current_attempt_id` identifies the running or superseding attempt when known.
+Inspect the receipt again to follow recovery through worker dispatch.
+
+Park acknowledgement records which park sequence the operator reviewed. It
+does not establish eligibility or worker start. Recovery preserves independent
+dependencies, approvals, ownership, budget limits, and service outages. Invalid
+issue configuration is an actionable issue hold, rather than project-outage
+evidence.

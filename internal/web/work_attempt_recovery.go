@@ -225,6 +225,8 @@ func workAttemptRecoveryHTML(response orchestrator.WorkAttemptRecoveryResponse, 
 	kindClass := "text-ok"
 	if failed {
 		kindClass = "text-err"
+	} else if response.Status == "blocked" || response.Status == "queued" {
+		kindClass = "text-muted"
 	}
 	message := strings.TrimSpace(response.Message)
 	if message == "" {
@@ -232,6 +234,9 @@ func workAttemptRecoveryHTML(response orchestrator.WorkAttemptRecoveryResponse, 
 	}
 	if message == "" {
 		message = "Recovery action completed"
+	}
+	if response.NextAction != "" {
+		message += "; next: " + response.NextAction
 	}
 	return `<span class="font-mono text-xs ` + kindClass + `">` + html.EscapeString(message) + `</span>`
 }
@@ -249,6 +254,9 @@ func workAttemptReceiptHTML(response orchestrator.WorkAttemptRecoveryResponse) s
 		value string
 	}
 	fields := []receiptField{
+		{label: "Recovery", value: response.Status},
+		{label: "Recovery blockers", value: strings.Join(response.Blockers, "; ")},
+		{label: "Recovery next", value: response.NextAction},
 		{label: "Worker", value: attempt.WorkerHost},
 		{label: "Phase", value: attempt.Phase},
 		{label: "Command", value: attempt.CurrentCommand},

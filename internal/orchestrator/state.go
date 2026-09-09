@@ -272,6 +272,7 @@ type MergeTiming struct {
 }
 
 type Retry struct {
+	RecoveryAttemptID  int64
 	Issue              connector.Issue
 	Attempt            int
 	DueAt              time.Time

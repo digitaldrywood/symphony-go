@@ -135,6 +135,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		return
 	}
 	rankingIssues := issues
+	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)

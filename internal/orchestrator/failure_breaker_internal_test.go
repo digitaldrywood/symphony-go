@@ -282,3 +282,27 @@ func TestProjectFailureBreakerCanaryStateMachine(t *testing.T) {
 		t.Fatalf("FailureBreaker = %#v, want success to close it", state.FailureBreaker)
 	}
 }
+
+func TestIssueConfigurationDoesNotTripProjectBreaker(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		err   error
+		class string
+	}{
+		{name: "typed", err: &runpkg.IssueConfigurationError{Field: "effort", Reason: "normal is unsupported"}},
+		{name: "restored", class: "issue_configuration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 2, Window: time.Hour, Cooldown: time.Hour}})
+			state := newState(cfg)
+			orch := &Orchestrator{cfg: cfg}
+			for range 6 {
+				orch.recordProjectAttemptOutcome(&state, "invalid-issue", time.Now(), store.WorkAttemptTerminalFailure, tc.err, tc.class, "invalid effort normal")
+			}
+			if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+				t.Fatalf("issue validation poisoned project breaker: %#v", state.FailureBreaker)
+			}
+		})
+	}
+}
