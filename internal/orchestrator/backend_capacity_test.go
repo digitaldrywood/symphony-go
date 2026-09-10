@@ -417,18 +417,17 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	if len(state.BackendOutages) != 0 {
 		t.Fatalf("BackendOutages = %#v, want short retry without outage", state.BackendOutages)
 	}
-	retry := state.Retry[issue.ID]
-	if retry.Attempt != 3 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Error != backendcapacity.StartupTimeoutErrorClass {
-		t.Fatalf("Retry[%q] = %#v, want startup-capacity retry", issue.ID, retry)
+	if len(state.Retry) != 0 {
+		t.Fatal("startup failure retained issue retry")
 	}
-	if len(state.FailureBreaker.Failures[backendcapacity.StartupFailureErrorClass]) != 1 || state.FailureBreaker.Active() {
+	if len(state.FailureBreaker.Failures[backendcapacity.StartupTimeoutErrorClass]) != 1 || state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want one preserved systemic signal", state.FailureBreaker)
 	}
 	if len(attempts.completions) != 1 {
 		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
 	}
 	completion := attempts.completions[0]
-	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "retrying after backend startup timeout" {
+	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "instance failed before first turn" {
 		t.Fatalf("completion = %#v, want startup timeout telemetry", completion)
 	}
 	var metadata struct {
@@ -460,7 +459,7 @@ func TestHandleRunResultTracksStartupExitAsStableBreakerSignal(t *testing.T) {
 	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
 	state := newState(cfg)
 
-	for index, stderr := range []string{"first issue stderr", "second issue stderr"} {
+	for index, stderr := range []string{"first issue stderr", "second issue stderr", "third issue stderr"} {
 		issue := connector.Issue{ID: fmt.Sprintf("issue-startup-exit-%d", index+1), State: "In Progress"}
 		state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(42 + index), StartedAt: now.Add(-time.Minute)}
 		state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
@@ -479,11 +478,11 @@ func TestHandleRunResultTracksStartupExitAsStableBreakerSignal(t *testing.T) {
 		})
 	}
 
-	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != backendcapacity.StartupFailureErrorClass || state.FailureBreaker.Count != 2 {
-		t.Fatalf("FailureBreaker = %#v, want two normalized startup failures", state.FailureBreaker)
+	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != backendcapacity.StartupFailureErrorClass || state.FailureBreaker.Count != 3 {
+		t.Fatalf("FailureBreaker = %#v, want three normalized startup failures", state.FailureBreaker)
 	}
-	if len(attempts.completions) != 2 {
-		t.Fatalf("work attempt completions = %#v, want two", attempts.completions)
+	if len(attempts.completions) != 3 {
+		t.Fatalf("work attempt completions = %#v, want three", attempts.completions)
 	}
 	for _, completion := range attempts.completions {
 		if completion.ErrorClass != backendcapacity.StartupFailureErrorClass || !strings.Contains(completion.ErrorMessage, "stderr") {

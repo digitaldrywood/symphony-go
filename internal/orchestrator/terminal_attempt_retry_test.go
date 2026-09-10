@@ -133,6 +133,7 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 				state.Running[tt.issue.ID] = running
 			}
 
+			tt.result.TurnStarted = true
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID:      tt.issue.ID,
 				Result:       tt.result,
@@ -361,7 +362,7 @@ func TestHandleRunResultParksTerminalRetryAtDurableLimit(t *testing.T) {
 					Status: string(store.WorkAttemptStatusActive), StartedAt: completedAt.Add(-time.Minute),
 				})
 
-				o.handleRunResult(t.Context(), &state, runpkg.Completion{
+				o.handleRunResult(t.Context(), &state, runpkg.Completion{Result: runpkg.RunResult{TurnStarted: true},
 					IssueID:      issue.ID,
 					Request:      runpkg.RunRequest{Mode: runpkg.RunModePlan},
 					Err:          fmt.Errorf("runner failed on attempt %d before producing work", attempt),
@@ -833,7 +834,7 @@ func TestReconcileTerminalAttemptRetryStatesUsesDurableIssueHistory(t *testing.T
 		wantEvent   string
 	}{
 		{name: "persisted terminal history reaches limit", errorClass: workAttemptErrorRunner, wantState: "Blocked", wantBlocked: true, wantReason: terminalAttemptRetryLimitCause},
-		{name: "persisted workspace history reaches limit", errorClass: workAttemptErrorWorkspace, wantState: "Blocked", wantBlocked: true, wantReason: workspacePreparationRetryLimitCause},
+		{name: "persisted workspace history restores lane", errorClass: workAttemptErrorWorkspace, wantState: "Todo"},
 		{name: "history lookup failure fails open", errorClass: workAttemptErrorRunner, historyErr: errors.New("history unavailable"), wantState: "Todo", wantEvent: terminalAttemptRetryHistoryUnavailableEvent},
 	}
 
@@ -877,6 +878,12 @@ func TestReconcileTerminalAttemptRetryStatesUsesDurableIssueHistory(t *testing.T
 			}
 			if tt.wantBlocked && blocked.Reason != tt.wantReason {
 				t.Fatalf("Blocked[%q].Reason = %q, want %q", issue.ID, blocked.Reason, tt.wantReason)
+			}
+			if tt.errorClass == workAttemptErrorWorkspace {
+				if len(attempts.historyQueries) != 0 {
+					t.Fatal("workspace failure queried issue retry history")
+				}
+				return
 			}
 			if len(attempts.historyQueries) != 1 {
 				t.Fatalf("history queries = %#v, want one", attempts.historyQueries)
@@ -926,7 +933,7 @@ func TestRetryCycleAttemptMatches(t *testing.T) {
 		{name: "pushed work resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.WorkerMetadataJSON = `{"work_product_pushed":true}` }},
 		{name: "forge outage resets terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = forgeUnavailableErrorClass }},
 		{name: "workspace is separate from terminal", cause: terminalAttemptRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = workAttemptErrorWorkspace }},
-		{name: "workspace failure", cause: workspacePreparationRetryLimitCause, wantMatching: true, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = workAttemptErrorWorkspace }},
+		{name: "workspace excluded", cause: workspacePreparationRetryLimitCause, mutate: func(attempt *telemetry.WorkAttempt) { attempt.ErrorClass = workAttemptErrorWorkspace }},
 		{name: "runner failure resets workspace", cause: workspacePreparationRetryLimitCause},
 	}
 
@@ -1280,7 +1287,7 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 		{name: "pushed work resets", limit: new(1), sequence: "FPF", wantState: "Todo"},
 		{name: "pushed work prevents retry", limit: new(0), sequence: "P", wantState: "In Progress"},
 		{name: "workspace still retries", limit: new(0), sequence: "WW", wantState: "Todo"},
-		{name: "workspace still parks at three", limit: new(0), sequence: "WWW", wantState: "Blocked"},
+		{name: "workspace never parks", limit: new(0), sequence: "WWW", wantState: "Todo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -1402,9 +1409,9 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 		{name: "success resets across restart", sequence: "FFRSRF", wantCount: 1, wantLatest: 6},
 		{name: "pushed restart resets", sequence: "FFRPRF", wantCount: 1, wantLatest: 6},
 		{name: "linked PR restart resets", sequence: "FFRLRF", wantCount: 1, wantLatest: 6},
-		{name: "workspace failures straddle restarts", sequence: "WRWRW", cause: workspacePreparationRetryLimitCause, wantCount: 3, wantLatest: 5},
+		{name: "workspace failures straddle restarts", sequence: "WRWRW", cause: workspacePreparationRetryLimitCause},
 		{name: "workspace failure resets terminal", sequence: "FFRWRF", wantCount: 1, wantLatest: 6},
-		{name: "implementation resets workspace", sequence: "WWRFRW", cause: workspacePreparationRetryLimitCause, wantCount: 1, wantLatest: 6},
+		{name: "implementation resets workspace", sequence: "WWRFRW", cause: workspacePreparationRetryLimitCause},
 	}
 	for _, tt := range tests {
 		for _, durable := range []bool{false, true} {

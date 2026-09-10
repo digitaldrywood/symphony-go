@@ -39,7 +39,7 @@ func (r *tokenCeilingRunner) Run(_ context.Context, _ orchestrator.RunRequest) (
 	if r.failureCount > 0 && n > r.failureCount {
 		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
 	}
-	return orchestrator.RunResult{}, fmt.Errorf(
+	return orchestrator.RunResult{TurnStarted: true}, fmt.Errorf(
 		"run agent turn: claude update rejected: session token ceiling exceeded: total_tokens=%d ceiling_tokens=2000000 source=max_session_tokens",
 		2000000+n,
 	)

@@ -2,8 +2,6 @@ package orchestrator
 
 import (
 	"fmt"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-func TestWorkspacePreparationRetriesAreBoundedAndPreserveFailureBreakers(t *testing.T) {
+func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *testing.T) {
 	t.Parallel()
 
 	const retryLimit = 3
@@ -79,38 +77,18 @@ func TestWorkspacePreparationRetriesAreBoundedAndPreserveFailureBreakers(t *test
 				if state.InstantFailures[issue.ID].Count != 2 || state.RepeatedFailures[issue.ID].Count != 2 {
 					t.Fatalf("attempt %d failure breakers = instant %#v repeated %#v, want preserved counts", attempt, state.InstantFailures[issue.ID], state.RepeatedFailures[issue.ID])
 				}
-				if attempt < retryLimit {
-					if _, blocked := state.Blocked[issue.ID]; blocked {
-						t.Fatalf("Blocked[%q] present at attempt %d below limit", issue.ID, attempt)
-					}
-					if _, ok := state.Retry[issue.ID]; !ok {
-						t.Fatalf("Retry[%q] missing at attempt %d below limit", issue.ID, attempt)
-					}
+				if len(state.Retry) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
+					t.Fatal("workspace failure retained issue retry accounting")
 				}
 			}
+			if !state.FailureBreaker.Active() || projectFailureBreakerAllowsDispatch(&state, base.Add(3*time.Minute)) {
+				t.Fatal("instance did not drain after three failures")
+			}
 
-			blocked, ok := state.Blocked[issue.ID]
-			if !ok || blocked.Reason != workspacePreparationRetryLimitCause || blocked.Recovery == nil || blocked.RecoveryReason != blockedRecoveryReasonBreakerCooldownActive || blocked.Recovery.Predicate != blockedRecoveryPredicateBreakerCooldown {
-				t.Fatalf("Blocked[%q] = %#v, want durable breaker cooldown park", issue.ID, blocked)
-			}
-			if blocked.AttemptError != tt.err.Error() || blocked.WorkAttemptID != retryLimit {
-				t.Fatalf("Blocked[%q] attempt evidence = %q/%d, want %q/%d", issue.ID, blocked.AttemptError, blocked.WorkAttemptID, tt.err.Error(), retryLimit)
-			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatalf("Retry[%q] present after workspace preparation retry limit", issue.ID)
-			}
-			if got := tracker.transitionStates(); !slices.Equal(got, []string{"Blocked"}) {
-				t.Fatalf("state transitions = %v, want [Blocked]", got)
-			}
 			if failures := state.FailureBreaker.Failures[workAttemptErrorWorkspace]; len(failures) != retryLimit {
 				t.Fatalf("FailureBreaker.Failures[%q] = %#v, want %d preserved failures", workAttemptErrorWorkspace, failures, retryLimit)
 			}
-			if event, ok := recentStateEvent(state, workspacePreparationRetryLimitEvent); !ok || event.Message == "" {
-				t.Fatalf("RecentEvents = %#v, want workspace preparation limit event", state.RecentEvents)
-			}
-			if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], tt.err.Error()) {
-				t.Fatalf("retry-limit comments = %#v, want latest workspace-preparation error", tracker.comments)
-			}
+
 		})
 	}
 }

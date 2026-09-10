@@ -3383,7 +3383,7 @@ func TestHandleRunResultCompletesDurableAttempt(t *testing.T) {
 	}
 	state := newState(cfg)
 	issue := dispatchTestIssue("issue-failed-attempt", "Todo")
-	state.Running[issue.ID] = Running{
+	state.Running[issue.ID] = Running{TurnCount: 1,
 		Issue:         issue,
 		Attempt:       2,
 		StartedAt:     now.Add(-time.Minute),

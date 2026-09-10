@@ -229,6 +229,20 @@ func TestHealthViewVerdicts(t *testing.T) {
 	}
 }
 
+func TestHealthPreTurnInstanceDrain(t *testing.T) {
+	t.Parallel()
+	for _, class := range []string{"runner_error", "workspace_preparation", "backend_startup_timeout"} {
+		t.Run(class, func(t *testing.T) {
+			t.Parallel()
+			resume := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+			rows := healthFailureBreakerRows([]telemetry.FailureBreaker{{InstanceDrained: true, ProjectID: "detent", Class: class, RepresentativeError: "startup failed", ResumeAt: resume}})
+			if len(rows) != 1 || rows[0].Status != "Drained" || rows[0].Component != "Instance · detent" || rows[0].Detail != class+": startup failed" || rows[0].Resets != resume.Format(time.RFC3339) {
+				t.Fatalf("health rows = %#v", rows)
+			}
+		})
+	}
+}
+
 func TestHealthRowsSurfaceHostPressure(t *testing.T) {
 	t.Parallel()
 

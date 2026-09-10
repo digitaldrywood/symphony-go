@@ -18,7 +18,7 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 		issues = append(issues, testIssue(fmt.Sprintf("issue-%d", number), fmt.Sprintf("digitaldrywood/detent#%d", number), "Todo"))
 	}
 	tracker := newFakeConnector(issues...)
-	runner := &staticRunner{err: errors.New("systemic backend failure")}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: errors.New("systemic backend failure")}
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:          time.Millisecond,
 		MaxConcurrentAgents:   1,
@@ -84,15 +84,15 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 		t.Fatalf("RequestProjectFailureBreakerCanary() = %#v, want immediate canary", canary)
 	}
 	state = waitForState(t, orch, func(state orchestrator.State) bool {
-		return state.FailureBreaker.Count == 6 && state.FailureBreaker.CanaryIssueID == ""
+		return runner.calls.Load() >= 10 && state.FailureBreaker.Active() && state.FailureBreaker.Count == 5 && state.FailureBreaker.CanaryIssueID == ""
 	})
-	if got := runner.calls.Load(); got != 6 {
-		t.Fatalf("runner calls after immediate canary = %d, want 6", got)
+	if got := runner.calls.Load(); got != 10 {
+		t.Fatalf("runner calls after immediate canary = %d, want 10", got)
 	}
 	fetches = tracker.fetchCandidateCalls()
 	waitForFetchCalls(t, tracker, fetches+2)
-	if got := runner.calls.Load(); got != 6 {
-		t.Fatalf("runner calls after failed canary cooldown = %d, want 6", got)
+	if got := runner.calls.Load(); got != 10 {
+		t.Fatalf("runner calls after failed canary cooldown = %d, want 10", got)
 	}
 	if !state.FailureBreaker.ResumeAt.After(time.Now()) {
 		t.Fatalf("FailureBreaker.ResumeAt = %s, want renewed cooldown", state.FailureBreaker.ResumeAt)
