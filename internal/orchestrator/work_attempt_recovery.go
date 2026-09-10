@@ -58,16 +58,20 @@ type WorkAttemptRecoveryRequest struct {
 }
 
 type WorkAttemptRecoveryResponse struct {
-	PolicyMismatch  string                                `json:"policy_mismatch,omitempty"`
-	Attempt         telemetry.WorkAttempt                 `json:"attempt"`
-	Action          WorkAttemptRecoveryAction             `json:"action,omitempty"`
-	Status          string                                `json:"status,omitempty"`
-	Message         string                                `json:"message,omitempty"`
-	Available       []WorkAttemptRecoveryActionDescriptor `json:"available_actions"`
-	ResumeEligible  bool                                  `json:"resume_eligible"`
-	ResumeState     *WorkAttemptResumeState               `json:"resume_state,omitempty"`
-	AuditEventID    int64                                 `json:"audit_event_id,omitempty"`
-	ConfirmationKey string                                `json:"confirmation_key,omitempty"`
+	CurrentAttemptID int64                                 `json:"current_attempt_id,omitempty"`
+	Blockers         []string                              `json:"blockers,omitempty"`
+	NextAction       string                                `json:"next_action,omitempty"`
+	Queued           bool                                  `json:"queued"`
+	PolicyMismatch   string                                `json:"policy_mismatch,omitempty"`
+	Attempt          telemetry.WorkAttempt                 `json:"attempt"`
+	Action           WorkAttemptRecoveryAction             `json:"action,omitempty"`
+	Status           string                                `json:"status,omitempty"`
+	Message          string                                `json:"message,omitempty"`
+	Available        []WorkAttemptRecoveryActionDescriptor `json:"available_actions"`
+	ResumeEligible   bool                                  `json:"resume_eligible"`
+	ResumeState      *WorkAttemptResumeState               `json:"resume_state,omitempty"`
+	AuditEventID     int64                                 `json:"audit_event_id,omitempty"`
+	ConfirmationKey  string                                `json:"confirmation_key,omitempty"`
 }
 
 type WorkAttemptRecoveryActionDescriptor struct {
@@ -91,9 +95,10 @@ type WorkAttemptResumeState struct {
 }
 
 type workAttemptRecoveryRequest struct {
-	at      time.Time
-	request WorkAttemptRecoveryRequest
-	reply   chan workAttemptRecoveryReply
+	at          time.Time
+	request     WorkAttemptRecoveryRequest
+	reply       chan workAttemptRecoveryReply
+	receiptOnly bool
 }
 
 type workAttemptRecoveryReply struct {
@@ -102,20 +107,25 @@ type workAttemptRecoveryReply struct {
 }
 
 func (o *Orchestrator) WorkAttemptReceipt(ctx context.Context, projectID string, attemptID int64) (WorkAttemptRecoveryResponse, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return o.workAttemptRecoveryReceipt(ctx, projectID, attemptID, time.Now().UTC())
+	return o.requestWorkAttemptRecovery(ctx, WorkAttemptRecoveryRequest{ProjectID: projectID, AttemptID: attemptID}, true)
 }
 
 func (o *Orchestrator) RecoverWorkAttempt(ctx context.Context, request WorkAttemptRecoveryRequest) (WorkAttemptRecoveryResponse, error) {
+	return o.requestWorkAttemptRecovery(ctx, request, false)
+}
+
+func (o *Orchestrator) requestWorkAttemptRecovery(ctx context.Context, request WorkAttemptRecoveryRequest, receiptOnly bool) (WorkAttemptRecoveryResponse, error) {
+	if o == nil || o.workAttempts == nil {
+		return WorkAttemptRecoveryResponse{}, recoveryError(WorkAttemptRecoveryUnavailable, "work attempt recovery is unavailable")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	queued := workAttemptRecoveryRequest{
-		at:      time.Now().UTC(),
-		request: request,
-		reply:   make(chan workAttemptRecoveryReply, 1),
+		at:          time.Now().UTC(),
+		request:     request,
+		reply:       make(chan workAttemptRecoveryReply, 1),
+		receiptOnly: receiptOnly,
 	}
 	select {
 	case <-ctx.Done():
@@ -164,6 +174,7 @@ func (o *Orchestrator) handleWorkAttemptRecovery(ctx context.Context, state *Sta
 		receipt.Status = "succeeded"
 		receipt.Message = "work attempt receipt inspected"
 		receipt.AuditEventID = auditID
+		receipt = o.describeWorkAttemptRecovery(ctx, state, receipt)
 		o.recordWorkAttemptRecoveryStateEvent(state, receipt, now)
 		return receipt, nil
 	}
@@ -194,7 +205,7 @@ func (o *Orchestrator) handleWorkAttemptRecovery(ctx context.Context, state *Sta
 		o.recordWorkAttemptRecoveryAudit(ctx, attempt, request, "failed", err.Error(), now, receipt.ResumeState)
 		return response, err
 	}
-	response.AuditEventID = o.recordWorkAttemptRecoveryAudit(ctx, response.Attempt, request, "succeeded", response.Message, now, response.ResumeState)
+	response.AuditEventID = o.recordWorkAttemptRecoveryAudit(ctx, response.Attempt, request, response.Status, response.Message, now, response.ResumeState)
 	o.recordWorkAttemptRecoveryStateEvent(state, response, now)
 	return response, nil
 }
@@ -307,6 +318,29 @@ func (o *Orchestrator) retryWorkAttempt(
 	if request.Action == WorkAttemptRecoveryRetryResume && !receipt.ResumeEligible {
 		return receipt, recoveryError(WorkAttemptRecoveryUnsupportedState, "resume retry requires an eligible completed session")
 	}
+	if running, active := state.Running[issue.ID]; active {
+		receipt.CurrentAttemptID = running.WorkAttemptID
+		receipt.Action = request.Action
+		receipt.Status = "running"
+		receipt.Message = "a worker is already running for this issue"
+		return receipt, nil
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+	if err != nil {
+		return receipt, fmt.Errorf("revalidate recovery issue: %w", err)
+	}
+	if len(issues) != 1 || issues[0].ID != issue.ID {
+		return receipt, recoveryError(WorkAttemptRecoveryNotFound, "current tracker issue is unavailable")
+	}
+	issue = issues[0]
+	intent, err := o.prepareWorkAttemptRetryIntent(ctx, issue, request, receipt, now)
+	if err != nil {
+		return receipt, err
+	}
+	return o.applyWorkAttemptRetryIntent(ctx, state, issue, intent, receipt, now)
+}
+
+func (o *Orchestrator) queueWorkAttemptRetry(state *State, issue connector.Issue, request WorkAttemptRecoveryRequest, receipt WorkAttemptRecoveryResponse, now time.Time) WorkAttemptRecoveryResponse {
 	attempt := receipt.Attempt.AttemptNumber + 1
 	if attempt <= 1 {
 		attempt = 1
@@ -327,28 +361,29 @@ func (o *Orchestrator) retryWorkAttempt(
 	issue = cloneIssue(issue)
 	delete(state.Blocked, issue.ID)
 	delete(state.Completed, issue.ID)
-	delete(state.BudgetRefusals, issue.ID)
 	state.Retry[issue.ID] = Retry{
-		Issue:       issue,
-		Attempt:     attempt,
-		DueAt:       now,
-		Error:       o.operatorText(reason),
-		RetryMode:   retryMode,
-		ResumeState: resumeState,
+		RecoveryAttemptID: request.AttemptID,
+		Issue:             issue,
+		Attempt:           attempt,
+		DueAt:             now,
+		Error:             o.operatorText(reason),
+		RetryMode:         retryMode,
+		ResumeState:       resumeState,
 	}
 	state.Claimed[issue.ID] = Claimed{
 		Issue:     issue,
 		ClaimedAt: now,
 	}
 	receipt.Action = request.Action
-	receipt.Status = "succeeded"
+	receipt.Status = "queued"
+	receipt.Queued = true
+	receipt.NextAction = "scheduler rechecks current dispatch predicates"
 	receipt.Message = "work attempt retry queued"
 	if request.Action == WorkAttemptRecoveryRetryResume {
 		receipt.Message = "work attempt resume retry queued"
 	}
 	receipt.Available = availableWorkAttemptRecoveryActions(receipt.Attempt, receipt.ResumeEligible, o.reaper != nil)
-	_ = ctx
-	return receipt, nil
+	return receipt
 }
 
 func (o *Orchestrator) cleanupWorkAttemptWorkspace(

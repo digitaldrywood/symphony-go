@@ -443,6 +443,9 @@ func projectAttemptFailureClass(
 	errorClass string,
 	errorMessage string,
 ) string {
+	if issueConfigurationFailure(err, errorClass, errorMessage) {
+		return ""
+	}
 	combined := strings.ToLower(strings.TrimSpace(errorMessage))
 	if err != nil {
 		combined += "\n" + strings.ToLower(strings.TrimSpace(err.Error()))
@@ -491,6 +494,28 @@ func projectAttemptFailureClass(
 		return ""
 	}
 	return projectFailureClassRunnerError + ":" + projectFailureHash(message)
+}
+
+func issueConfigurationFailure(err error, errorClass, message string) bool {
+	var configurationErr *runpkg.IssueConfigurationError
+	if errors.As(err, &configurationErr) || errorClass == "issue_configuration" {
+		return true
+	}
+	if err != nil {
+		message += "\n" + err.Error()
+	}
+	for line := range strings.SplitSeq(message, "\n") {
+		_, detail, found := strings.Cut(line, "agent override rejected: ")
+		if !found {
+			continue
+		}
+		if strings.HasPrefix(detail, "block: parse detent-agent YAML:") || detail == "block: detent-agent schema must be 1" ||
+			strings.HasSuffix(detail, ": explicit effort is unsupported by the selected model") ||
+			strings.HasSuffix(detail, ": explicit model is unavailable or retired in the selected backend catalog") {
+			return true
+		}
+	}
+	return false
 }
 
 func deliverableFailureCommand(err error, message string) string {

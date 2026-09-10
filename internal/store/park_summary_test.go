@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,29 @@ func TestParkAcknowledgementPersistsAndRearms(t *testing.T) {
 	}
 	if summary.ParkCount != 2 || !summary.ReviewRecommended(1) {
 		t.Fatalf("rearmed summary = %#v", summary)
+	}
+}
+
+func TestParkAcknowledgementDoesNotRegress(t *testing.T) {
+	t.Parallel()
+	for _, sequence := range []int64{0, 2, 4} {
+		t.Run(strconv.FormatInt(sequence, 10), func(t *testing.T) {
+			db := openParkTestStore(t, filepath.Join(t.TempDir(), "detent.db"))
+			now := time.Now().UTC().Truncate(time.Second)
+			for index := range 4 {
+				insertParkAttempt(t, db, now.Add(time.Duration(index-4)*time.Minute), "terminal", "no_progress", "no_progress_limit", `{}`)
+			}
+			if err := db.AcknowledgeIssueParks(t.Context(), parkTestIdentity(), 4, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AcknowledgeIssueParks(t.Context(), parkTestIdentity(), sequence, now.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			summary, err := db.IssueParkSummary(t.Context(), parkTestIdentity())
+			if err != nil || summary.AcknowledgedParkSequence != 4 || summary.AcknowledgedAt == nil || !summary.AcknowledgedAt.Equal(now) {
+				t.Fatalf("stale acknowledgement replaced durable generation: %#v, %v", summary, err)
+			}
+		})
 	}
 }
 

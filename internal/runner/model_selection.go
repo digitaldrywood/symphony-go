@@ -20,6 +20,15 @@ type agentSelection struct {
 	Err       error
 }
 
+type IssueConfigurationError struct {
+	Field  string
+	Reason string
+}
+
+func (e *IssueConfigurationError) Error() string {
+	return fmt.Sprintf("agent override rejected: %s: %s", e.Field, e.Reason)
+}
+
 func hasResumeIdentity(req RunRequest) bool {
 	return req.RetryMode == RetryModeResume && !agentResumeStateEmpty(req.ResumeState) && !req.ResumeState.RuntimeIdentity.IsZero()
 }
@@ -49,7 +58,7 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, workspace
 		}
 		override, _, err := agentoverride.FromIssueBody(req.Issue.Description)
 		if err != nil {
-			return result.reject("block", "", err.Error())
+			return result.rejectIssue("block", "", err.Error())
 		}
 		effort, field := override.EffortForRole(role)
 		roleEffort := effort != ""
@@ -100,7 +109,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 	}
 	override, _, err := agentoverride.FromIssueBody(issue.Description)
 	if err != nil {
-		return result.reject("block", "", err.Error())
+		return result.rejectIssue("block", "", err.Error())
 	}
 	explicitModel, modelField := override.ModelForRole(role)
 	explicitEffort, effortField := override.EffortForRole(role)
@@ -162,7 +171,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 	}
 	model, available := availableSelectionModel(models, result.Model)
 	if !available && !automaticModel {
-		return result.reject(modelField, result.Model, "explicit model is unavailable or retired in the selected backend catalog")
+		return result.rejectIssue(modelField, result.Model, "explicit model is unavailable or retired in the selected backend catalog")
 	}
 	if !available && policy.Unavailable != nil && *policy.Unavailable == "fallback" && policy.FallbackOrder != nil {
 		for _, candidate := range *policy.FallbackOrder {
@@ -182,7 +191,7 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 		result.Effort = effort
 	} else {
 		if explicitEffort != "" {
-			return result.reject(effortField, explicitEffort, "explicit effort is unsupported by the selected model")
+			return result.rejectIssue(effortField, explicitEffort, "explicit effort is unsupported by the selected model")
 		}
 		result.Err = fmt.Errorf("automatic model selection: effort default %q is unsupported by model %q; configure a supported effort", result.Effort, result.Model)
 	}
@@ -192,6 +201,12 @@ func resolveAgentSelection(ctx context.Context, issue connector.Issue, workspace
 func (s agentSelection) reject(field, value, reason string) agentSelection {
 	s.Rejections = append(s.Rejections, AgentOverrideRejection{Field: field, Value: value, Reason: reason})
 	s.Err = fmt.Errorf("agent override rejected: %s: %s", field, reason)
+	return s
+}
+
+func (s agentSelection) rejectIssue(field, value, reason string) agentSelection {
+	s = s.reject(field, value, reason)
+	s.Err = &IssueConfigurationError{Field: field, Reason: reason}
 	return s
 }
 

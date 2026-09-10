@@ -891,8 +891,20 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- o.forceQuit(request.ctx, &state, request.at)
 		case request := <-o.recoveryRequests:
 			state.syncWorkerProgress()
-			response, err := o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
+			var response WorkAttemptRecoveryResponse
+			var err error
+			if request.receiptOnly {
+				response, err = o.workAttemptRecoveryReceipt(ctx, request.request.ProjectID, request.request.AttemptID, request.at)
+				if err == nil {
+					response = o.describeWorkAttemptRecovery(ctx, &state, response)
+				}
+			} else {
+				response, err = o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
+			}
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+			if !request.receiptOnly && err == nil && response.Queued {
+				resetTicker(ticker, time.Millisecond)
+			}
 		case request := <-o.operatorMoves:
 			state.syncWorkerProgress()
 			request.reply <- o.handleOperatorMove(&state, request.request, request.at)

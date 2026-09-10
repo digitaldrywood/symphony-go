@@ -202,6 +202,18 @@ func TestIssueExplanationAPIAcknowledgesCurrentParkSequence(t *testing.T) {
 	if got.ParkSummary.AcknowledgedParkSequence != 4 || got.ParkSummary.AcknowledgedAt == nil {
 		t.Fatalf("acknowledgement response = %#v", got.ParkSummary)
 	}
+	fake.result.ParkSummary.ParkCount = 2
+	stale := performJSON(t, server.Handler(), http.MethodPost, path, "", map[string]string{"Authorization": "Bearer detent_test_token"})
+	if stale.Code != http.StatusOK {
+		t.Fatalf("stale acknowledgement status = %d", stale.Code)
+	}
+	var replay explain.IssueExplanation
+	if err := json.Unmarshal(stale.Body.Bytes(), &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.ParkSummary.AcknowledgedParkSequence != 4 || replay.ParkSummary.AcknowledgedAt == nil || !replay.ParkSummary.AcknowledgedAt.Equal(*got.ParkSummary.AcknowledgedAt) {
+		t.Fatalf("API reported a regressed acknowledgement: %#v", replay.ParkSummary)
+	}
 	persisted, err := backend.(store.ParkSummaryStore).IssueParkSummary(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: "issue-1639"})
 	if err != nil {
 		t.Fatalf("IssueParkSummary() error = %v", err)

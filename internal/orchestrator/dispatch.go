@@ -135,6 +135,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		return
 	}
 	rankingIssues := issues
+	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
@@ -181,6 +182,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
+			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)

@@ -161,6 +161,26 @@ func TestWorkAttemptRecoveryAPIHTMXSuccess(t *testing.T) {
 	}
 }
 
+func TestRecoveryFeedbackDistinguishesQueuedBlockedAndRunning(t *testing.T) {
+	for _, status := range []string{"queued", "blocked", "running"} {
+		t.Run(status, func(t *testing.T) {
+			recovery := &fakeWorkAttemptRecovery{recover: orchestrator.WorkAttemptRecoveryResponse{
+				Status: status, Message: "recovery " + status, NextAction: "recheck current predicates",
+			}}
+			server := newWorkAttemptRecoveryAPIServer(t, recovery)
+			rec := performRecoveryForm(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/work-attempts/42/recovery", url.Values{"action": {"retry_fresh"}}, map[string]string{
+				"Authorization": "Bearer detent_test_token", "HX-Request": "true",
+			})
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "recovery "+status) || !strings.Contains(rec.Body.String(), "next: recheck current predicates") {
+				t.Fatalf("feedback = %d %s", rec.Code, rec.Body.String())
+			}
+			if status != "running" && strings.Contains(rec.Body.String(), "text-ok") {
+				t.Fatal("unfinished recovery is styled as success")
+			}
+		})
+	}
+}
+
 func newWorkAttemptRecoveryAPIServer(t *testing.T, recovery *fakeWorkAttemptRecovery) *web.Server {
 	t.Helper()
 

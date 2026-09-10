@@ -199,6 +199,15 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	delete(state.Running, event.IssueID)
+	if issueConfigurationFailure(event.Err, "", "") {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "issue_configuration", event.Err.Error(), "blocked", "correct the issue agent override before recovery")
+		releaseProjectFailureBreakerCanary(state, event.IssueID)
+		if !o.blockHumanOwnedWorkerFailure(ctx, state, event, running, "issue_configuration", event.Err.Error(), "correct the issue detent-agent override, then request recovery", "worker_issue_configuration_blocked") {
+			delete(state.Retry, event.IssueID)
+			state.Blocked[event.IssueID] = Blocked{Issue: running.Issue, Source: BlockedSourceProjectStatus, Reason: "issue_configuration", RecoveryRemedy: "correct the issue detent-agent override, then request recovery"}
+		}
+		return
+	}
 	if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
 		return
 	}

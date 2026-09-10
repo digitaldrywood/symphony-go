@@ -49,8 +49,12 @@ func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
 		s.logger.Error("issue park acknowledgement failed", slog.Any("error", err))
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
 	}
-	explanation.ParkSummary.AcknowledgedParkSequence = explanation.ParkSummary.ParkCount
-	explanation.ParkSummary.AcknowledgedAt = &acknowledgedAt
+	acknowledged, err := acknowledger.IssueParkSummary(c.Request().Context(), identity)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Park acknowledgement was recorded; current park summary is unavailable, retry inspection"))
+	}
+	explanation.ParkSummary.AcknowledgedParkSequence = acknowledged.AcknowledgedParkSequence
+	explanation.ParkSummary.AcknowledgedAt = acknowledged.AcknowledgedAt
 	return c.JSON(http.StatusOK, explanation)
 }
 

@@ -480,6 +480,9 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		if _, running := state.Running[issueID]; running {
 			continue
 		}
+		if retry, queued := state.Retry[issueID]; queued && retry.RecoveryAttemptID > 0 {
+			continue
+		}
 		attempt, ok := latestByIssue[issueID]
 		if !ok || !terminalAttemptRetryableFailure(attempt) {
 			continue
