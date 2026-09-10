@@ -36,30 +36,18 @@ func OptionsFromConfig(cfg config.CodexOptions) Options {
 }
 
 func turnSandboxPolicyForWorkspace(threadSandbox string, policy any, extraWritableRoots []string) any {
-	policyMap, ok := workspaceWriteSandboxPolicyMap(threadSandbox, policy)
-	if !ok {
-		return policy
-	}
-	if len(extraWritableRoots) == 0 {
-		return policy
-	}
-	return mergeSandboxWritableRoots(policyMap, extraWritableRoots)
-}
-
-func workspaceWriteSandboxPolicyMap(threadSandbox string, policy any) (map[string]any, bool) {
 	policyMap, ok := sandboxPolicyMap(policy)
 	if !ok {
-		return nil, false
+		return policy
 	}
-	policyKind := strings.TrimSpace(policyType(policyMap))
-	if isWorkspaceWriteSandboxName(policyKind) {
-		return policyMap, true
+	policyMap = config.NormalizeTurnSandboxPolicy(threadSandbox, policyMap)
+	if len(extraWritableRoots) > 0 && isWorkspaceWriteSandboxName(policyType(policyMap)) {
+		return mergeSandboxWritableRoots(policyMap, extraWritableRoots)
 	}
-	if policyKind != "" || !isWorkspaceWriteSandboxName(threadSandbox) {
-		return nil, false
+	if policy == nil {
+		return nil
 	}
-	policyMap["type"] = "workspaceWrite"
-	return policyMap, true
+	return policyMap
 }
 
 func sandboxPolicyMap(policy any) (map[string]any, bool) {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -634,6 +635,7 @@ type Codex struct {
 	TurnTimeoutMS                   int                          `yaml:"turn_timeout_ms"`
 	ReadTimeoutMS                   int                          `yaml:"read_timeout_ms"`
 	StallTimeoutMS                  int                          `yaml:"stall_timeout_ms"`
+	turnSandboxPolicyTypeInferred   bool
 }
 
 func (c Config) AgentBackendConfigs() []AgentBackend {
@@ -676,7 +678,7 @@ func CodexAgentBackend(codex Codex) AgentBackend {
 		ApprovalPolicy:                  codex.ApprovalPolicy,
 		DeliverableElicitationAllowlist: append([]DeliverableElicitationRule(nil), codex.DeliverableElicitationAllowlist...),
 		ThreadSandbox:                   codex.ThreadSandbox,
-		TurnSandboxPolicy:               codex.TurnSandboxPolicy,
+		TurnSandboxPolicy:               NormalizeTurnSandboxPolicy(codex.ThreadSandbox, codex.TurnSandboxPolicy),
 		TurnTimeoutMS:                   codex.TurnTimeoutMS,
 		ReadTimeoutMS:                   codex.ReadTimeoutMS,
 		StallTimeoutMS:                  codex.StallTimeoutMS,
@@ -697,6 +699,10 @@ func CodexAgentBackend(codex Codex) AgentBackend {
 
 func mergedCodexAgentBackend(fallback Codex, backend AgentBackend) AgentBackend {
 	cfg := fallback
+	if fallback.turnSandboxPolicyTypeInferred {
+		cfg.TurnSandboxPolicy = maps.Clone(fallback.TurnSandboxPolicy)
+		delete(cfg.TurnSandboxPolicy, "type")
+	}
 	if strings.TrimSpace(backend.Command) != "" {
 		cfg.Command = strings.TrimSpace(backend.Command)
 	}
@@ -1217,7 +1223,7 @@ func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (
 	}
 	localRoot, localPrompt, err := parseWorkflowDocument(localRaw)
 	if err != nil {
-		return Workflow{}, fmt.Errorf("parse local workflow overlay: %w", err)
+		return Workflow{}, fmt.Errorf("parse local workflow overlay %s: %w", localPath, err)
 	}
 
 	if sharedRoot == nil {
@@ -1268,6 +1274,9 @@ func parseWorkflowDocument(raw []byte) (*yaml.Node, []byte, error) {
 	}
 	if root.Kind != yaml.MappingNode {
 		return nil, nil, errors.New("workflow frontmatter must be a mapping")
+	}
+	if err := validateSandboxPolicyNodes(root); err != nil {
+		return nil, nil, err
 	}
 	return root, prompt, nil
 }
@@ -1849,6 +1858,10 @@ func (c *Config) normalize() {
 	}
 	c.Agent.Knowledge.Normalize()
 	c.Agents.normalize()
+	if _, explicit := c.Codex.TurnSandboxPolicy["type"]; !explicit && c.Codex.TurnSandboxPolicy != nil {
+		c.Codex.turnSandboxPolicyTypeInferred = true
+	}
+	c.Codex.TurnSandboxPolicy = NormalizeTurnSandboxPolicy(c.Codex.ThreadSandbox, c.Codex.TurnSandboxPolicy)
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Codex.ModelProvider = strings.TrimSpace(c.Codex.ModelProvider)
 	c.Codex.ServiceTier = strings.TrimSpace(c.Codex.ServiceTier)
@@ -2491,7 +2504,90 @@ func (o *CodexOptions) normalize() {
 	o.DeliverableElicitationAllowlist = normalizeDeliverableElicitationRules(o.DeliverableElicitationAllowlist)
 }
 
+func NormalizeTurnSandboxPolicy(threadSandbox string, policy map[string]any) map[string]any {
+	if _, exists := policy["type"]; exists || policy == nil {
+		return policy
+	}
+	var kind string
+	switch strings.TrimSpace(threadSandbox) {
+	case "workspace-write":
+		kind = "workspaceWrite"
+	case "danger-full-access":
+		kind = "dangerFullAccess"
+	case "read-only":
+		kind = "readOnly"
+	default:
+		return policy
+	}
+	normalized := maps.Clone(policy)
+	normalized["type"] = kind
+	return normalized
+}
+
+func validateTurnSandboxPolicy(policy map[string]any) error {
+	value, exists := policy["type"]
+	if !exists {
+		return nil
+	}
+	switch value {
+	case "workspaceWrite", "dangerFullAccess", "readOnly", "externalSandbox":
+		return nil
+	default:
+		return fmt.Errorf("turn_sandbox_policy.type must be workspaceWrite, dangerFullAccess, readOnly, or externalSandbox; got %v", value)
+	}
+}
+
+func validateSandboxPolicyNodes(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	type sandboxOptions struct {
+		Policy any `yaml:"turn_sandbox_policy"`
+	}
+	var source struct {
+		Codex  sandboxOptions `yaml:"codex"`
+		Agents struct {
+			Backends []struct {
+				Kind    string         `yaml:"kind"`
+				Options sandboxOptions `yaml:"options"`
+			} `yaml:"backends"`
+		} `yaml:"agents"`
+	}
+	if err := node.Decode(&source); err != nil {
+		return err
+	}
+	validate := func(path string, value any) error {
+		if value == nil {
+			return nil
+		}
+		policy, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s.turn_sandbox_policy must be an object such as {type: workspaceWrite, networkAccess: false}", path)
+		}
+		if err := validateTurnSandboxPolicy(policy); err != nil {
+			return fmt.Errorf("%s.%w", path, err)
+		}
+		return nil
+	}
+	if err := validate("codex", source.Codex.Policy); err != nil {
+		return err
+	}
+	for i, backend := range source.Agents.Backends {
+		kind := strings.ToLower(strings.TrimSpace(backend.Kind))
+		if kind != "" && kind != AgentBackendCodex {
+			continue
+		}
+		if err := validate(fmt.Sprintf("agents.backends[%d].options", i), backend.Options.Policy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (o CodexOptions) validate(prefix string, problems *[]string) {
+	if err := validateTurnSandboxPolicy(o.TurnSandboxPolicy); err != nil {
+		*problems = append(*problems, prefix+"."+err.Error())
+	}
 	validateDeliverableElicitationRules(prefix+".deliverable_elicitation_allowlist", o.DeliverableElicitationAllowlist, problems)
 	if o.ModelProvider != "" && !validAgentIdentityLabel(o.ModelProvider) {
 		*problems = append(*problems, prefix+".model_provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens")
@@ -2735,6 +2831,9 @@ func (b *Budget) validate(prefix string, problems *[]string) {
 }
 
 func (c *Codex) validate(problems *[]string) {
+	if err := validateTurnSandboxPolicy(c.TurnSandboxPolicy); err != nil {
+		*problems = append(*problems, "codex."+err.Error())
+	}
 	validateDeliverableElicitationRules("codex.deliverable_elicitation_allowlist", c.DeliverableElicitationAllowlist, problems)
 	if strings.TrimSpace(c.Command) == "" {
 		*problems = append(*problems, "codex.command is required")

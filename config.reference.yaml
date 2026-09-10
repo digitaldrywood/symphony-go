@@ -999,8 +999,8 @@
 #       repository: null
 #   # codex.thread_sandbox | type: string | default: "workspace-write" | required: No | validation: None
 #   thread_sandbox: "workspace-write"
-#   # codex.turn_sandbox_policy | type: mapping<string, value> | default: {} | required: No | validation: None
-#   turn_sandbox_policy: {}
+#   # codex.turn_sandbox_policy | type: mapping<string, value> | default: {"type":"workspaceWrite"} | required: No | validation: None
+#   turn_sandbox_policy: {"type":"workspaceWrite"}
 #   # codex.turn_timeout_ms | type: integer | default: 3600000 | required: No | validation: must be greater than 0
 #   turn_timeout_ms: 3600000
 #   # codex.read_timeout_ms | type: integer | default: 5000 | required: No | validation: must be greater than 0

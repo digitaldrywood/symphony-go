@@ -147,3 +147,32 @@ func doctorProjectDefinitionConfig(t *testing.T, sourceRoot string) []byte {
 	}
 	return raw
 }
+
+func TestDoctorSandboxPolicySource(t *testing.T) {
+	t.Parallel()
+	for _, filename := range []string{"detent.yaml", "detent.local.yaml"} {
+		t.Run(filename, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			workflowPath := filepath.Join(dir, "WORKFLOW.md")
+			for name, body := range map[string]string{
+				"WORKFLOW.md": "Instructions.\n",
+				"detent.yaml": "schema: 1\ntracker:\n  kind: memory\n",
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			source := filepath.Join(dir, filename)
+			if err := os.WriteFile(source, []byte("schema: 1\ncodex:\n  turn_sandbox_policy: {type: invalid}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			deps := successfulDoctorDeps()
+			deps.loadWorkflow = workflowconfig.LoadWorkflow
+			checks := checkDoctorProject(t.Context(), globalconfig.Project{ID: "alpha", Workflow: workflowPath, Workdir: dir}, deps, RuntimeSecret{}, false)
+			if len(checks) == 0 || checks[0].Status != doctorFail || !strings.Contains(checks[0].Detail, source) || !strings.Contains(checks[0].Detail, "turn_sandbox_policy.type") {
+				t.Fatalf("checks = %#v, want invalid sandbox policy failure naming %s", checks, source)
+			}
+		})
+	}
+}

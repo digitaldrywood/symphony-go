@@ -1061,7 +1061,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `codex.shell` | `string` | `platform default shell` | No | None |
 | `codex.stall_timeout_ms` | `integer` | `300000` | No | must be greater than or equal to 0 |
 | `codex.thread_sandbox` | `string` | `"workspace-write"` | No | None |
-| `codex.turn_sandbox_policy` | `mapping<string, value>` | `{}` | No | None |
+| `codex.turn_sandbox_policy` | `mapping<string, value>` | `{"type":"workspaceWrite"}` | No | None |
 | `codex.turn_timeout_ms` | `integer` | `3600000` | No | must be greater than 0 |
 | `deliverable` | `object` | `see child fields` | No | None |
 | `deliverable.kind` | `string` | `"pull_request"` | No | must be one of pull_request, artifact |

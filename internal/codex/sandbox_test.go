@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"fmt"
+	"maps"
 	"reflect"
 	"testing"
 	"time"
@@ -42,7 +44,7 @@ func TestTurnSandboxPolicyForWorkspaceMergesExtraWritableRoots(t *testing.T) {
 	}
 }
 
-func TestWorkspaceWriteSandboxPolicyMapSkipsExplicitNonWorkspacePolicy(t *testing.T) {
+func TestTurnSandboxPolicyPreservesExplicitNonWorkspacePolicy(t *testing.T) {
 	t.Parallel()
 
 	policy := map[string]any{
@@ -50,9 +52,9 @@ func TestWorkspaceWriteSandboxPolicyMapSkipsExplicitNonWorkspacePolicy(t *testin
 		"networkAccess": true,
 	}
 
-	got, ok := workspaceWriteSandboxPolicyMap("workspace-write", policy)
-	if ok {
-		t.Fatalf("workspaceWriteSandboxPolicyMap() = %#v, true; want false for explicit non-workspace policy", got)
+	got := turnSandboxPolicyForWorkspace("workspace-write", policy, []string{"/extra"})
+	if !reflect.DeepEqual(got, policy) {
+		t.Fatalf("turnSandboxPolicyForWorkspace() = %#v; want explicit non-workspace policy", got)
 	}
 	if policy["type"] != "dangerFullAccess" {
 		t.Fatalf("policy type = %#v, want dangerFullAccess", policy["type"])
@@ -105,5 +107,41 @@ func TestOptionsFromConfigClonesApprovalPolicy(t *testing.T) {
 	}
 	if options.StallTimeout != 1250*time.Millisecond {
 		t.Fatalf("StallTimeout = %v, want 1.25s", options.StallTimeout)
+	}
+}
+
+func TestTurnSandboxPolicyTypes(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ thread, kind string }{
+		{"workspace-write", "workspaceWrite"},
+		{"danger-full-access", "dangerFullAccess"},
+		{"read-only", "readOnly"},
+	} {
+		for _, explicit := range []bool{false, true} {
+			for _, roots := range [][]string{nil, {"/extra"}} {
+				t.Run(fmt.Sprintf("%s/explicit=%t/roots=%d", tt.thread, explicit, len(roots)), func(t *testing.T) {
+					t.Parallel()
+					policy := map[string]any{"networkAccess": false}
+					if explicit {
+						policy["type"] = tt.kind
+					}
+					original := maps.Clone(policy)
+					got, ok := turnSandboxPolicyForWorkspace(tt.thread, policy, roots).(map[string]any)
+					if !ok || got["type"] != tt.kind || got["networkAccess"] != false {
+						t.Fatalf("policy = %#v, want type %s and networkAccess false", got, tt.kind)
+					}
+					if tt.kind == "workspaceWrite" && len(roots) > 0 {
+						if !reflect.DeepEqual(got["writableRoots"], roots) {
+							t.Fatalf("roots = %#v, want %v", got["writableRoots"], roots)
+						}
+					} else if _, exists := got["writableRoots"]; exists {
+						t.Fatalf("unexpected writableRoots: %#v", got)
+					}
+					if !reflect.DeepEqual(policy, original) {
+						t.Fatalf("input mutated: %#v", policy)
+					}
+				})
+			}
+		}
 	}
 }

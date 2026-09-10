@@ -331,6 +331,20 @@ func parseLegacyProjectDefinition(
 	shared projectWorkflowDocument,
 	local projectWorkflowDocument,
 ) (Workflow, error) {
+	for _, source := range []struct {
+		raw  []byte
+		path string
+	}{
+		{legacyWorkflowBytes(shared), sources.WorkflowPath},
+		{legacyWorkflowBytes(local), sources.LocalWorkflowPath},
+	} {
+		if source.path == sources.LocalWorkflowPath && !sources.HasLocalWorkflow {
+			continue
+		}
+		if _, _, err := parseWorkflowDocument(source.raw); err != nil {
+			return Workflow{}, fmt.Errorf("parse %s: %w", source.path, err)
+		}
+	}
 	sharedRaw := legacyWorkflowBytes(shared)
 	if !sources.HasLocalWorkflow {
 		return ParseWorkflow(sharedRaw)
@@ -441,6 +455,9 @@ func parseSchemaConfig(raw []byte, path string) (*yaml.Node, error) {
 			schema,
 			ProjectDefinitionSchema,
 		)
+	}
+	if err := validateSandboxPolicyNodes(root); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", displayDefinitionPath(path, "detent.yaml"), err)
 	}
 	root.Content = append(root.Content[:index], root.Content[index+2:]...)
 	return root, nil
