@@ -182,6 +182,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			releaseWorkerGitHubMonitorProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
 			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
 			rescheduled := state.Retry[issue.ID]
+			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)

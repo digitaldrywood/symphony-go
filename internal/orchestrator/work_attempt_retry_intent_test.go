@@ -193,6 +193,61 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 	}
 }
 
+func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
+	t.Parallel()
+	for _, refusal := range []string{"global admission", "project capacity"} {
+		t.Run(refusal, func(t *testing.T) {
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
+			issue := recoveryTestIssue()
+			issue.Title = "Preserve recovery backoff"
+			issue.State = "Todo"
+			issue.AssignedToWorker = true
+			now := time.Now().UTC()
+			attemptID := startRecoveryWorkAttempt(t, t.Context(), db, issue, store.WorkAttemptStatusTerminal, store.WorkAttemptTerminalFailure, now.Add(-time.Hour))
+			state := newState(host.cfg)
+			receipt, err := host.workAttemptRecoveryReceipt(t.Context(), "detent", attemptID, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}
+			intent, err := host.prepareWorkAttemptRetryIntent(t.Context(), issue, request, receipt, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response, err := host.applyWorkAttemptRetryIntent(t.Context(), &state, issue, intent, receipt, now); err != nil || response.Status != "queued" {
+				t.Fatalf("queue recovery = %#v, %v", response, err)
+			}
+			switch refusal {
+			case "global admission":
+				gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, now)
+				if err != nil || !acquired {
+					t.Fatalf("hold global slot = %v, %v", acquired, err)
+				}
+				t.Cleanup(func() {
+					if err := gate.Release(slot); err != nil {
+						t.Error(err)
+					}
+				})
+				host.globalDispatchGate = gate
+			case "project capacity":
+				state.Running["other"] = Running{Issue: connector.Issue{ID: "other"}, StartedAt: now}
+			}
+			host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			rescheduled, found := state.Retry[issue.ID]
+			if !found || !rescheduled.DueAt.After(now) {
+				t.Fatalf("dispatch refusal did not schedule backoff: found=%v due=%v blocked=%v decisions=%v", found, rescheduled.DueAt, state.Blocked, state.SchedulerDecisions)
+			}
+			host.restoreWorkAttemptRetryIntents(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Millisecond))
+			replayed := state.Retry[issue.ID]
+			if replayed.RecoveryAttemptID != attemptID || !replayed.DueAt.Equal(rescheduled.DueAt) {
+				t.Fatalf("replay changed dispatch backoff: recovery_id=%d want=%d due=%v want=%v", replayed.RecoveryAttemptID, attemptID, replayed.DueAt, rescheduled.DueAt)
+			}
+		})
+	}
+}
+
 type failingRecoveryJournal struct {
 	store.Store
 }
