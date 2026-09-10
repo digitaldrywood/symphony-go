@@ -18,6 +18,9 @@ func (o *Orchestrator) handleTransientOverload(
 	running Running,
 	overloadErr *backendcapacity.Error,
 ) {
+	if o.handlePreTurnFailure(ctx, state, event, running) {
+		return
+	}
 	releaseBackendCapacityProbe(state, running)
 	delay := event.RetryDelay
 	if delay <= 0 {

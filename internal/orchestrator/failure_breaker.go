@@ -318,6 +318,9 @@ func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, issueID 
 }
 
 func (o *Orchestrator) recordProjectFailureBreakerProgress(state *State, issueID string, at time.Time) {
+	if state != nil && state.FailureBreaker.PreTurn && !state.FailureBreaker.Active() {
+		resetProjectFailureBreaker(&state.FailureBreaker)
+	}
 	if state == nil || !state.FailureBreaker.Active() || strings.TrimSpace(state.FailureBreaker.CanaryIssueID) != strings.TrimSpace(issueID) {
 		return
 	}
@@ -348,7 +351,13 @@ func (o *Orchestrator) recordProjectFailureBreakerFailure(state *State, issueID 
 func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure ProjectFailure, class string, at time.Time) {
 	breaker := &state.FailureBreaker
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)
-	pruneProjectFailures(breaker, at)
+	limit, cooldown := breaker.Config.SameClassLimit, breaker.Config.Cooldown
+	if breaker.PreTurn {
+		limit = consecutiveRetryCycleLimit
+		cooldown = normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
+	} else {
+		pruneProjectFailures(breaker, at)
+	}
 
 	if breaker.Active() && breaker.Class != class {
 		closedClass := breaker.Class
@@ -367,12 +376,12 @@ func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure
 		breaker.Count = len(failures)
 		breaker.FirstFailureAt = failures[0].At
 		breaker.TrippedAt = at
-		breaker.ResumeAt = at.Add(breaker.Config.Cooldown)
+		breaker.ResumeAt = at.Add(cooldown)
 		breaker.CanaryIssueID = ""
 		o.logProjectFailureBreaker(state, at, "project_failure_breaker_retripped")
 		return
 	}
-	if len(failures) < breaker.Config.SameClassLimit {
+	if len(failures) < limit {
 		return
 	}
 
@@ -380,7 +389,7 @@ func (o *Orchestrator) recordProjectFailureBreakerEvidence(state *State, failure
 	breaker.Count = len(failures)
 	breaker.FirstFailureAt = failures[0].At
 	breaker.TrippedAt = at
-	breaker.ResumeAt = at.Add(breaker.Config.Cooldown)
+	breaker.ResumeAt = at.Add(cooldown)
 	breaker.CanaryIssueID = ""
 	o.logProjectFailureBreaker(state, at, "project_failure_breaker_tripped")
 }
@@ -417,7 +426,7 @@ func resetProjectFailureBreaker(breaker *ProjectFailureBreaker) {
 }
 
 func pruneProjectFailures(breaker *ProjectFailureBreaker, now time.Time) {
-	if breaker == nil {
+	if breaker == nil || breaker.PreTurn {
 		return
 	}
 	breaker.Config = normalizeFailureBreakerConfig(breaker.Config)

@@ -251,10 +251,12 @@ func workAttemptMatchesIssue(attempt telemetry.WorkAttempt, issue connector.Issu
 }
 
 func retryCycleAttemptMatches(attempt telemetry.WorkAttempt, cause string) bool {
+	if preTurnAttempt(attempt) {
+		return false
+	}
 	switch strings.TrimSpace(cause) {
 	case workspacePreparationRetryLimitCause:
-		return strings.TrimSpace(attempt.ErrorClass) == workAttemptErrorWorkspace &&
-			strings.EqualFold(strings.TrimSpace(attempt.TerminalState), string(store.WorkAttemptTerminalFailure))
+		return false
 	case terminalAttemptRetryLimitCause:
 		return strings.TrimSpace(attempt.ErrorClass) != workAttemptErrorWorkspace &&
 			strings.TrimSpace(attempt.ErrorClass) != "service_restart" &&
@@ -482,6 +484,18 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		}
 		attempt, ok := latestByIssue[issueID]
 		if !ok || !terminalAttemptRetryableFailure(attempt) {
+			continue
+		}
+		if preTurnAttempt(attempt) {
+			var metadata struct {
+				Source string `json:"dispatch_source_state"`
+			}
+			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
+				metadata.Source = ""
+			}
+			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source}, now); changed {
+				transitions = append(transitions, updated)
+			}
 			continue
 		}
 		updated, changed, _ := o.demoteTerminalAttemptRetry(

@@ -393,7 +393,7 @@ func TestHandleRunResultTripsDispatchLoopAfterFailures(t *testing.T) {
 	})
 	orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 	state := newState(cfg)
-	state.Running[issue.ID] = Running{
+	state.Running[issue.ID] = Running{TurnCount: 1,
 		Issue:               issue,
 		Attempt:             1,
 		WorkAttemptID:       42,

@@ -138,6 +138,13 @@ func clearProjectFailureBreakerIssue(breaker *ProjectFailureBreaker, issueID str
 	if breaker == nil || strings.TrimSpace(issueID) == "" {
 		return false
 	}
+	if breaker.PreTurn {
+		if breaker.CanaryIssueID == strings.TrimSpace(issueID) {
+			breaker.CanaryIssueID = ""
+			return true
+		}
+		return false
+	}
 	changed := false
 	for class, failures := range breaker.Failures {
 		kept := failures[:0]

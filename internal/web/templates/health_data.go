@@ -128,7 +128,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	if summary, ok := boardFailureBreakerSummary(breakerFaults); ok {
 		view.Kind = primitives.KindErr
 		view.Verdict = summary.Title + "."
-		view.Detail = "The affected project cannot resume without operator action."
+		view.Detail = "Dispatch resumes through a canary after the configured cooldown."
 		return view
 	}
 	if !diagnosticsSnapshotHasLoadedData(snapshot) {
@@ -538,14 +538,21 @@ func healthFailureBreakerRows(breakers []telemetry.FailureBreaker) []healthRow {
 	rows := make([]healthRow, 0, len(breakers))
 	for index, breaker := range breakers {
 		projectID := diagnosticsConditionProject(breaker.ProjectID)
-		rows = append(rows, healthRow{
+		row := healthRow{
 			ID:        "health-failure-breaker-" + boardAlertRowSlug(projectID+breaker.Class, index),
 			Component: "Failure breaker · " + projectID,
 			Kind:      primitives.KindErr,
 			Status:    "Needs attention",
 			Detail:    failureBreakerCauseLabel(breaker),
 			Resets:    "operator action",
-		})
+		}
+		if breaker.InstanceDrained {
+			row.Component = "Instance · " + projectID
+			row.Status = "Drained"
+			row.Detail = breaker.Class + ": " + breaker.RepresentativeError
+			row.Resets = breaker.ResumeAt.UTC().Format(time.RFC3339)
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }

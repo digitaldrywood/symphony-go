@@ -47,7 +47,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 		o.recoverWorkerGitHubMonitorFromUpdate(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 	}
-	if strings.TrimSpace(event.usage.SessionID) != "" || event.usage.TurnCount > 0 {
+	if event.usage.TurnCount > 0 || strings.TrimSpace(event.usage.SessionID) != "" && !state.FailureBreaker.PreTurn {
 		progressedAt := event.usage.LastEventAt
 		if progressedAt.IsZero() {
 			progressedAt = o.clockNow()
@@ -193,6 +193,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if !event.Result.RuntimeIdentity.IsZero() {
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
 	}
+	if event.Result.TurnStarted && running.TurnCount == 0 {
+		running.TurnCount = 1
+	}
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	running.ArtifactEvidence = event.Result.ArtifactEvidence
 	if event.Result.RateLimits != nil {
@@ -245,7 +248,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if event.Err != nil {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
-	if event.Err == nil || event.Result.TurnStarted {
+	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
 		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
 	} else if !isGitHubRESTBudgetHeadroomError(event.Err) {
@@ -263,6 +266,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
+		return
+	}
+	if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) && o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if o.handleMergeWorkerStartupTimeout(ctx, state, event, running) {
@@ -290,7 +296,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, githubRESTCapacityError, errorString(event.Err))
 		return
 	}
-	if event.Err == nil || event.Result.TurnStarted {
+	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	} else {
 		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
@@ -316,8 +322,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
 		return
 	}
-	if errors.Is(event.Err, runpkg.ErrWorkspacePreparation) {
-		o.handleWorkspacePreparationFailure(ctx, state, event, running)
+	if o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
@@ -795,69 +800,6 @@ func deliverableCommandEvidenceMetadata(result runpkg.RunResult) map[string]any 
 		return nil
 	}
 	return map[string]any{"deliverable_commands": result.DeliverableCommands}
-}
-
-func (o *Orchestrator) handleWorkspacePreparationFailure(
-	ctx context.Context,
-	state *State,
-	event runpkg.Completion,
-	running Running,
-) {
-	errorMessage := event.Err.Error()
-	o.logWorkerLifecycle(running.Issue, "worker_workspace_preparation_failed",
-		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
-		"attempt", running.Attempt,
-		"worker_host", strings.TrimSpace(running.WorkerHost),
-		"error", event.Err,
-	)
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, workAttemptErrorWorkspace, errorMessage)
-	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
-		ctx,
-		state,
-		running,
-		event.CompletedAt,
-		store.WorkAttemptTerminalFailure,
-		workAttemptErrorWorkspace,
-		errorMessage,
-		"workspace_repair",
-		"workspace preparation failed",
-		nil,
-	)
-	if attemptCompleted {
-		count, latest, known := o.consecutiveRetryCycleCount(ctx, state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
-		switch {
-		case !known:
-			o.recordRetryCycleHistoryUnavailable(state, running.Issue, workspacePreparationRetryLimitCause, event.CompletedAt)
-		case count >= consecutiveRetryCycleLimit:
-			if _, parked := o.parkRetryCycleLimit(
-				ctx,
-				state,
-				running.Issue,
-				running.Mode,
-				running.DiffStats,
-				workspacePreparationRetryLimitCause,
-				count,
-				latest,
-				event.CompletedAt,
-			); parked {
-				return
-			}
-		}
-	}
-	attempt := event.RetryAttempt
-	if attempt < 1 {
-		attempt = nextAttempt(running.Attempt)
-	}
-	delay := event.RetryDelay
-	if delay <= 0 {
-		delay = o.retryDelay(attempt, false)
-	}
-	o.scheduleRetryAfter(state, running.Issue, attempt, event.CompletedAt, delay, errorMessage, running.WorkerHost)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      event.CompletedAt,
-		Event:   "workspace_repair_retry_scheduled",
-		Message: "scheduled workspace repair retry for " + issueLabel(running.Issue),
-	})
 }
 
 func (o *Orchestrator) completeRedundantGateWaitRun(

@@ -1387,7 +1387,7 @@ func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 
 	issue := testIssue("issue-3", "digitaldrywood/detent#12", "Todo")
 	tracker := newFakeConnector(issue)
-	runner := &staticRunner{err: errors.New("runner failed")}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: errors.New("runner failed")}
 
 	orch := newTestOrchestrator(t, tracker, runner)
 	stop := runOrchestrator(t, orch)
@@ -1423,22 +1423,9 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		retry, ok := state.Retry[issue.ID]
-		return ok && retry.Error != ""
-	})
-
-	if _, ok := state.Running[issue.ID]; ok {
-		t.Fatalf("Running[%q] present after runner panic", issue.ID)
-	}
-	if _, ok := state.Claimed[issue.ID]; ok {
-		t.Fatalf("Claimed[%q] present after terminal runner panic", issue.ID)
-	}
-	if got := state.Retry[issue.ID].Attempt; got != 1 {
-		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)
-	}
-	if got := state.Retry[issue.ID].Error; !strings.Contains(got, "runner panic: boom") {
-		t.Fatalf("Retry[%q].Error = %q, want runner panic", issue.ID, got)
+	state := waitForState(t, orch, func(state orchestrator.State) bool { return state.FailureBreaker.Active() })
+	if len(state.Retry) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || !state.FailureBreaker.PreTurn {
+		t.Fatal("runner panic was attributed to issue")
 	}
 }
 
@@ -1448,7 +1435,7 @@ func TestRunParksIssueAfterRepeatedInstantBackendFailures(t *testing.T) {
 	issue := testIssue("issue-instant-fail", "digitaldrywood/detent#927", "Todo")
 	tracker := newFakeConnector(issue)
 	backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
-	runner := &staticRunner{err: instantBackendError{body: backendBody}}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           time.Millisecond,
@@ -1573,7 +1560,7 @@ func TestRunParksIssueAfterRepeatedInstantBackendFailuresTruncatesConfiguredOutp
 	issue := testIssue("issue-instant-fail-truncated", "digitaldrywood/detent#978", "Todo")
 	tracker := newFakeConnector(issue)
 	backendBody := "0123456789abcdefghijklmnopqrstuvwxyz"
-	runner := &staticRunner{err: instantBackendError{body: backendBody}}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:             time.Millisecond,
@@ -1629,7 +1616,7 @@ func TestRunInstantFailureCircuitBreakerComparesFullBackendErrorKey(t *testing.T
 		"01234" + strings.Repeat("a", 20) + "vwxyz",
 		"01234" + strings.Repeat("b", 20) + "vwxyz",
 	}
-	runner := &staticRunner{}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}}
 	runner.onRun = func(orchestrator.RunRequest) {
 		call := runner.calls.Load()
 		runner.err = instantBackendError{body: backendBodies[int(call-1)%len(backendBodies)]}
@@ -1689,7 +1676,7 @@ func TestRunParksInstantBackendFailuresInBlockedWithDefaultStates(t *testing.T) 
 	issue := testIssue("issue-default-instant-fail", "digitaldrywood/detent#928", "Todo")
 	tracker := newFakeConnector(issue)
 	backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
-	runner := &staticRunner{err: instantBackendError{body: backendBody}}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           time.Millisecond,
@@ -3789,7 +3776,7 @@ func (panicRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.R
 func (r *retryRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	call := r.calls.Add(1)
 	if call == 1 {
-		return orchestrator.RunResult{}, errors.New("runner failed")
+		return orchestrator.RunResult{TurnStarted: true}, errors.New("runner failed")
 	}
 
 	select {

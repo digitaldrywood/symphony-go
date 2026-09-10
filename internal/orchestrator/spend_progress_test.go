@@ -893,7 +893,7 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 		progressSpend: &spendProgressStore{result: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2}},
 	}
 	state := newState(cfg)
-	running := Running{
+	running := Running{TurnCount: 1,
 		Issue:               runningIssue,
 		Attempt:             2,
 		WorkAttemptID:       42,
@@ -963,7 +963,7 @@ func TestHandleRunResultDiscoversWorkerOpenedPRBeforeWorkerError(t *testing.T) {
 		progressSpend: &spendProgressStore{result: store.IssueSpendSince{TotalTokens: 46_465_472, Sessions: 4}},
 	}
 	state := newState(cfg)
-	running := Running{
+	running := Running{TurnCount: 1,
 		Issue:               runningIssue,
 		Attempt:             4,
 		WorkAttemptID:       42,

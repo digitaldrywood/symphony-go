@@ -4809,7 +4809,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		MergeWorkerSlotAcquiredAt: slotAcquiredAt,
 		MergeStartedAt:            startedAt,
 	}
-	failureState.Running[issue.ID] = Running{Issue: cloneIssue(issue), StartedAt: startedAt}
+	failureState.Running[issue.ID] = Running{TurnCount: 1, Issue: cloneIssue(issue), StartedAt: startedAt}
 	failureOrch := &Orchestrator{
 		cfg:    cfg,
 		logger: slog.New(slog.NewTextHandler(&failureLogs, nil)),
@@ -4847,7 +4847,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		MergeWorkerSlotAcquiredAt: slotAcquiredAt,
 		MergeStartedAt:            startedAt,
 	}
-	successState.Running[successIssue.ID] = Running{Issue: cloneIssue(successIssue), StartedAt: startedAt}
+	successState.Running[successIssue.ID] = Running{TurnCount: 1, Issue: cloneIssue(successIssue), StartedAt: startedAt}
 	successOrch := &Orchestrator{
 		cfg:       cfg,
 		connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{successIssue}},
@@ -5888,7 +5888,7 @@ func TestHandleRunResultBlocksMergeWorkerAfterRepeatedInterruptedSessions(t *tes
 		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	state := newState(cfg)
-	state.Running[issue.ID] = Running{
+	state.Running[issue.ID] = Running{TurnCount: 1,
 		Issue:     cloneIssue(issue),
 		Attempt:   3,
 		StartedAt: now.Add(-time.Minute),
